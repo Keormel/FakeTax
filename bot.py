@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Iterable, Mapping, NamedTuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Update
@@ -48,7 +51,18 @@ RECEIPT_STATIC_LINES = (
     "Tsena 7 MDL",
 )
 
-SHORT_ID, TICKET_ID, TIMESTAMP, DIVIDER = range(4)
+CHISINAU_TIMEZONE = "Europe/Chisinau"
+WEEKDAYS_RU = (
+    "понедельник",
+    "вторник",
+    "среда",
+    "четверг",
+    "пятница",
+    "суббота",
+    "воскресенье",
+)
+
+SHORT_ID = 0
 
 
 class Box(NamedTuple):
@@ -275,50 +289,41 @@ def clean_input(text: str | None) -> str:
     return (text or "").strip()
 
 
+def chisinau_now() -> datetime:
+    try:
+        timezone = ZoneInfo(CHISINAU_TIMEZONE)
+    except ZoneInfoNotFoundError as exc:
+        raise RuntimeError("Install the tzdata package to use Europe/Chisinau timezone data.") from exc
+    return datetime.now(timezone)
+
+
+def generate_ticket_id() -> str:
+    return f"397{random.randint(0, 99999):05d}"
+
+
+def build_auto_receipt_values() -> dict[str, str]:
+    current_time = chisinau_now()
+    return {
+        "str_ticket_id": generate_ticket_id(),
+        "str_timestamp": current_time.strftime("%d.%m.%Y vremea %H:%M"),
+        "str_divider": f"{WEEKDAYS_RU[current_time.weekday()]} {current_time:%H:%M}",
+    }
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     if update.message:
-        await update.message.reply_text("Enter str_short_id:")
+        await update.message.reply_text("Введите str_short_id:")
     return SHORT_ID
 
 
 async def collect_short_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     value = clean_input(update.message.text if update.message else None)
     if not value:
-        await update.message.reply_text("Enter str_short_id:")
+        await update.message.reply_text("Введите str_short_id:")
         return SHORT_ID
     context.user_data["str_short_id"] = value
-    await update.message.reply_text("Enter str_ticket_id:")
-    return TICKET_ID
-
-
-async def collect_ticket_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    value = clean_input(update.message.text if update.message else None)
-    if not value:
-        await update.message.reply_text("Enter str_ticket_id:")
-        return TICKET_ID
-    context.user_data["str_ticket_id"] = value
-    await update.message.reply_text("Enter str_timestamp:")
-    return TIMESTAMP
-
-
-async def collect_timestamp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    value = clean_input(update.message.text if update.message else None)
-    if not value:
-        await update.message.reply_text("Enter str_timestamp:")
-        return TIMESTAMP
-    context.user_data["str_timestamp"] = value
-    await update.message.reply_text("Enter str_divider:")
-    return DIVIDER
-
-
-async def collect_divider_and_render(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    value = clean_input(update.message.text if update.message else None)
-    if not value:
-        await update.message.reply_text("Enter str_divider:")
-        return DIVIDER
-
-    context.user_data["str_divider"] = value
+    context.user_data.update(build_auto_receipt_values())
 
     try:
         photo_stream = render_receipt_image(
@@ -351,9 +356,6 @@ def build_application(token: str) -> Application:
         ],
         states={
             SHORT_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, collect_short_id)],
-            TICKET_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, collect_ticket_id)],
-            TIMESTAMP: [MessageHandler(filters.TEXT & ~filters.COMMAND, collect_timestamp)],
-            DIVIDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, collect_divider_and_render)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
